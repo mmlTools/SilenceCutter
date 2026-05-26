@@ -3,15 +3,38 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SilenceCutter.Models;
 using SilenceCutter.Services;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 
 namespace SilenceCutter.ViewModels;
 
 public partial class MainWindowViewModel : ObservableObject
 {
     private readonly FfmpegService _ffmpeg = new();
+    private readonly UpdateChecker _updateChecker = new("mmlTools", "SilenceCutter");
+    private readonly AppSettings _settings = AppSettings.Load();
+    private readonly List<TimelineSegment> _watchedSegments = new();
+    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(125) };
+    private readonly List<string> _previewFrames = new();
+    private CancellationTokenSource? _previewCts;
+    private Process? _previewAudioProcess;
+    private string? _previewFolder;
+    private int _previewFrameIndex;
+    private double _timelineTrackWidth = 760;
+    private static readonly HashSet<string> SupportedVideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4",
+        ".mov",
+        ".mkv",
+        ".webm",
+        ".avi"
+    };
 
     public ObservableCollection<MediaClip> Clips { get; } = new();
+    public ObservableCollection<string> Toasts { get; } = new();
+    public ObservableCollection<TimelineSegmentBlock> TimelineBlocks { get; } = new();
 
     [ObservableProperty] private MediaClip? selectedClip;
     [ObservableProperty] private double thresholdDb = -35;
@@ -20,8 +43,113 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private double resolveFps = 25;
     [ObservableProperty] private string status = "Add clips to begin.";
     [ObservableProperty] private bool reencodeExports = true;
+    [ObservableProperty] private bool isPreviewOpen;
+    [ObservableProperty] private string previewTitle = "";
+    [ObservableProperty] private string previewDetails = "";
+    [ObservableProperty] private Bitmap? previewFrame;
+    [ObservableProperty] private bool isPreviewLoading;
+    [ObservableProperty] private bool isUpdateAvailable;
+    [ObservableProperty] private string latestVersion = "";
+    [ObservableProperty] private string latestReleaseUrl = "";
+
+    public MainWindowViewModel()
+    {
+        _previewTimer.Tick += (_, _) => AdvancePreviewFrame();
+    }
 
     public IStorageProvider? StorageProvider { get; set; }
+
+    public void AddClipPaths(IEnumerable<string> paths)
+    {
+        var added = 0;
+
+        foreach (var path in paths)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                continue;
+
+            if (!SupportedVideoExtensions.Contains(Path.GetExtension(path)))
+                continue;
+
+            if (Clips.Any(x => string.Equals(x.FilePath, path, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            Clips.Add(new MediaClip { FilePath = path, FileName = Path.GetFileName(path) });
+            added++;
+        }
+
+        SelectedClip ??= Clips.FirstOrDefault();
+
+        if (added > 0)
+            Status = added == 1 ? "Added 1 clip." : $"Added {added} clips.";
+    }
+
+    public void SetTimelineTrackWidth(double width)
+    {
+        if (width <= 0 || Math.Abs(width - _timelineTrackWidth) < 0.5)
+            return;
+
+        _timelineTrackWidth = width;
+        RefreshTimelineBlocks();
+    }
+
+    public bool AllPausesSelected
+    {
+        get
+        {
+            var pauses = SelectedClip?.Segments.Where(x => x.Kind == SegmentKind.Silence).ToList();
+            return pauses?.Count > 0 && pauses.All(x => x.Remove);
+        }
+        set
+        {
+            if (SelectedClip is null)
+                return;
+
+            foreach (var segment in SelectedClip.Segments.Where(x => x.Kind == SegmentKind.Silence))
+                segment.Remove = value;
+
+            OnPropertyChanged();
+        }
+    }
+
+    partial void OnSelectedClipChanged(MediaClip? value)
+    {
+        WatchPauseSelection(value);
+        RefreshTimelineBlocks();
+        OnPropertyChanged(nameof(AllPausesSelected));
+    }
+
+    partial void OnStatusChanged(string value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+            _ = ShowToastAsync(value);
+    }
+
+    [RelayCommand]
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            _settings.LastKnownVersion = _updateChecker.CurrentVersion.ToString();
+            _settings.Save();
+
+            var update = await _updateChecker.CheckLatestReleaseAsync();
+            if (update is null)
+            {
+                IsUpdateAvailable = false;
+                return;
+            }
+
+            LatestVersion = update.Version;
+            LatestReleaseUrl = update.Url;
+            IsUpdateAvailable = true;
+            Status = $"Silence Cutter {update.Version} is available.";
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Update check failed: {ex.Message}");
+        }
+    }
 
     [RelayCommand]
     private async Task AddClipsAsync()
@@ -34,13 +162,7 @@ public partial class MainWindowViewModel : ObservableObject
             FileTypeFilter = new[] { new FilePickerFileType("Video files") { Patterns = new[] { "*.mp4", "*.mov", "*.mkv", "*.webm", "*.avi" } } }
         });
 
-        foreach (var f in files)
-        {
-            var path = f.TryGetLocalPath();
-            if (string.IsNullOrWhiteSpace(path)) continue;
-            Clips.Add(new MediaClip { FilePath = path, FileName = Path.GetFileName(path) });
-        }
-        SelectedClip ??= Clips.FirstOrDefault();
+        AddClipPaths(files.Select(f => f.TryGetLocalPath()).OfType<string>());
     }
 
     [RelayCommand]
@@ -77,12 +199,55 @@ public partial class MainWindowViewModel : ObservableObject
 
         try
         {
+            ClosePreview();
+            PreviewTitle = SelectedClip.FileName;
+            PreviewDetails = $"{TimelineSegment.TimeFmt(segment.Start)} - {TimelineSegment.TimeFmt(segment.End)} ({segment.Duration:0.00}s)";
+            IsPreviewOpen = true;
+            IsPreviewLoading = true;
             Status = $"Playing {TimelineSegment.TimeFmt(segment.Start)} - {TimelineSegment.TimeFmt(segment.End)} from {SelectedClip.FileName}.";
-            await _ffmpeg.PlaySegmentAsync(SelectedClip.FilePath, segment);
+
+            _previewCts = new CancellationTokenSource();
+            _previewFolder = Path.Combine(Path.GetTempPath(), "silence-cutter-preview-" + Guid.NewGuid().ToString("N"));
+            var frames = await _ffmpeg.ExtractPreviewFramesAsync(SelectedClip.FilePath, segment, _previewFolder, ct: _previewCts.Token);
+
+            _previewFrames.Clear();
+            _previewFrames.AddRange(frames);
+            _previewFrameIndex = 0;
+
+            if (_previewFrames.Count > 0)
+            {
+                SetPreviewFrame(_previewFrames[0]);
+                _previewAudioProcess = _ffmpeg.StartSegmentAudioPlayback(SelectedClip.FilePath, segment);
+                _previewTimer.Start();
+            }
+
+            IsPreviewLoading = false;
         }
         catch (Exception ex)
         {
+            ClosePreview();
             Status = $"Could not play segment: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private void ClosePreview()
+    {
+        _previewTimer.Stop();
+        _previewCts?.Cancel();
+        _previewCts?.Dispose();
+        _previewCts = null;
+        StopPreviewAudio();
+        _previewFrames.Clear();
+        _previewFrameIndex = 0;
+        SetPreviewFrame(null);
+        IsPreviewOpen = false;
+        IsPreviewLoading = false;
+
+        if (_previewFolder is not null)
+        {
+            try { Directory.Delete(_previewFolder, true); } catch { }
+            _previewFolder = null;
         }
     }
 
@@ -158,12 +323,123 @@ public partial class MainWindowViewModel : ObservableObject
             clip.DurationSeconds = segments.Sum(s => s.Duration);
             clip.IsAnalyzed = true;
             clip.Status = $"{segments.Count(s => s.Kind == SegmentKind.Silence)} pauses found";
+            if (ReferenceEquals(clip, SelectedClip))
+                WatchPauseSelection(clip);
+            if (ReferenceEquals(clip, SelectedClip))
+                RefreshTimelineBlocks();
+            OnPropertyChanged(nameof(AllPausesSelected));
             Status = clip.Status;
         }
         catch (Exception ex)
         {
             clip.Status = "Error";
             Status = ex.Message;
+        }
+    }
+
+    private async Task ShowToastAsync(string message)
+    {
+        Toasts.Add(message);
+        while (Toasts.Count > 3)
+            Toasts.RemoveAt(0);
+
+        await Task.Delay(4200);
+        await Dispatcher.UIThread.InvokeAsync(() => Toasts.Remove(message));
+    }
+
+    private void WatchPauseSelection(MediaClip? clip)
+    {
+        foreach (var segment in _watchedSegments)
+            segment.PropertyChanged -= Segment_PropertyChanged;
+
+        _watchedSegments.Clear();
+
+        if (clip is null)
+            return;
+
+        foreach (var segment in clip.Segments.Where(x => x.Kind == SegmentKind.Silence))
+        {
+            segment.PropertyChanged += Segment_PropertyChanged;
+            _watchedSegments.Add(segment);
+        }
+    }
+
+    private void Segment_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(TimelineSegment.Remove))
+        {
+            RefreshTimelineBlocks();
+            OnPropertyChanged(nameof(AllPausesSelected));
+        }
+    }
+
+    private void RefreshTimelineBlocks()
+    {
+        TimelineBlocks.Clear();
+
+        if (SelectedClip is null || SelectedClip.Segments.Count == 0)
+            return;
+
+        var duration = SelectedClip.Segments.Sum(x => x.Duration);
+        if (duration <= 0)
+            return;
+
+        foreach (var segment in SelectedClip.Segments)
+        {
+            TimelineBlocks.Add(new TimelineSegmentBlock
+            {
+                Segment = segment,
+                Width = Math.Max(8, segment.Duration / duration * _timelineTrackWidth)
+            });
+        }
+    }
+
+    private void AdvancePreviewFrame()
+    {
+        if (_previewFrames.Count == 0)
+            return;
+
+        _previewFrameIndex = (_previewFrameIndex + 1) % _previewFrames.Count;
+        SetPreviewFrame(_previewFrames[_previewFrameIndex]);
+    }
+
+    private void StopPreviewAudio()
+    {
+        if (_previewAudioProcess is null)
+            return;
+
+        try
+        {
+            if (!_previewAudioProcess.HasExited)
+                _previewAudioProcess.Kill(true);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _previewAudioProcess.Dispose();
+            _previewAudioProcess = null;
+        }
+    }
+
+    private void SetPreviewFrame(string? path)
+    {
+        PreviewFrame = path is null ? null : new Bitmap(path);
+    }
+
+    partial void OnPreviewFrameChanged(Bitmap? oldValue, Bitmap? newValue)
+    {
+        if (!ReferenceEquals(oldValue, newValue))
+            oldValue?.Dispose();
+    }
+
+    partial void OnLatestVersionChanged(string value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            _settings.LastSeenUpdateVersion = value;
+            _settings.Save();
         }
     }
 }

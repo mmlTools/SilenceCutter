@@ -145,10 +145,28 @@ public sealed class FfmpegService
         }
     }
 
-    public Task PlaySegmentAsync(string inputFile, TimelineSegment segment)
+    public async Task<IReadOnlyList<string>> ExtractPreviewFramesAsync(
+        string inputFile,
+        TimelineSegment segment,
+        string outputFolder,
+        int fps = 8,
+        CancellationToken ct = default)
     {
-        var args = $"-autoexit -ss {segment.Start.ToString(CultureInfo.InvariantCulture)} -t {segment.Duration.ToString(CultureInfo.InvariantCulture)} -i {Q(inputFile)}";
-        Process.Start(new ProcessStartInfo
+        Directory.CreateDirectory(outputFolder);
+
+        var outputPattern = Path.Combine(outputFolder, "frame_%04d.jpg");
+        var args = $"-y -ss {F(segment.Start)} -i {Q(inputFile)} -t {F(segment.Duration)} -vf fps={fps},scale=960:-2 -q:v 3 {Q(outputPattern)}";
+        var result = await ProcessRunner.RunAsync(FfmpegPath, args, ct);
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException(result.StdErr);
+
+        return Directory.GetFiles(outputFolder, "frame_*.jpg").OrderBy(x => x).ToList();
+    }
+
+    public Process StartSegmentAudioPlayback(string inputFile, TimelineSegment segment)
+    {
+        var args = $"-nodisp -autoexit -loglevel quiet -ss {F(segment.Start)} -t {F(segment.Duration)} -i {Q(inputFile)}";
+        var process = Process.Start(new ProcessStartInfo
         {
             FileName = "ffplay",
             Arguments = args,
@@ -156,7 +174,7 @@ public sealed class FfmpegService
             CreateNoWindow = true
         });
 
-        return Task.CompletedTask;
+        return process ?? throw new InvalidOperationException("Could not start preview audio.");
     }
 
     private static List<TimelineSegment> BuildFullTimeline(double duration, List<(double Start, double End)> silences)

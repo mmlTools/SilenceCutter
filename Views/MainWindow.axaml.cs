@@ -15,7 +15,11 @@ public partial class MainWindow : Window
         Opened += (_, _) =>
         {
             if (DataContext is MainWindowViewModel vm)
+            {
                 vm.StorageProvider = StorageProvider;
+                if (vm.CheckForUpdatesCommand.CanExecute(null))
+                    vm.CheckForUpdatesCommand.Execute(null);
+            }
         };
     }
 
@@ -38,10 +42,115 @@ public partial class MainWindow : Window
     private void MaximizeButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
+    private async void SupportProjectButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        var launcher = TopLevel.GetTopLevel(this)?.Launcher;
+        if (launcher is not null)
+            await launcher.LaunchUriAsync(new Uri("https://paypal.me/mmltools"));
+    }
+
+    private async void OpenLatestReleaseButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel vm || string.IsNullOrWhiteSpace(vm.LatestReleaseUrl))
+            return;
+
+        var launcher = TopLevel.GetTopLevel(this)?.Launcher;
+        if (launcher is not null)
+            await launcher.LaunchUriAsync(new Uri(vm.LatestReleaseUrl));
+    }
+
+    private void AddClipsButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            ExecuteIfReady(vm.AddClipsCommand);
+    }
+
+    private void ClipsDropArea_DragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = HasDroppedFiles(e) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void ClipsDropArea_Drop(object? sender, DragEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+        {
+            var paths = e.DataTransfer.TryGetFiles()?
+                .Select(file => file.Path.LocalPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Cast<string>();
+
+            if (paths is not null)
+                vm.AddClipPaths(paths);
+        }
+
+        e.Handled = true;
+    }
+
+    private void AnalyzeSelectedButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            ExecuteIfReady(vm.AnalyzeSelectedCommand);
+    }
+
+    private void AnalyzeAllButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            ExecuteIfReady(vm.AnalyzeAllCommand);
+    }
+
+    private void ExportCutVideoButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            ExecuteIfReady(vm.ExportCutVideoCommand);
+    }
+
+    private void ExportPausesOnlyButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            ExecuteIfReady(vm.ExportPausesOnlyCommand);
+    }
+
+    private void ExportEdlButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            ExecuteIfReady(vm.ExportEdlCommand);
+    }
+
+    private void ExportCsvButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            ExecuteIfReady(vm.ExportCsvCommand);
+    }
+
+    private void TimelineTrackContainer_SizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            vm.SetTimelineTrackWidth(e.NewSize.Width);
+    }
+
+    private static void ExecuteIfReady(System.Windows.Input.ICommand command)
+    {
+        if (command.CanExecute(null))
+            command.Execute(null);
+    }
+
+    private static bool HasDroppedFiles(DragEventArgs e) => e.DataTransfer.TryGetFiles()?.Any() == true;
+
     private void PlaySegmentButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (DataContext is MainWindowViewModel vm &&
             sender is Button { Tag: TimelineSegment segment } &&
+            vm.PlaySegmentCommand.CanExecute(segment))
+        {
+            vm.PlaySegmentCommand.Execute(segment);
+        }
+    }
+
+    private void TrackSegmentButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm &&
+            sender is Button { Tag: TimelineSegmentBlock { Segment: { Kind: SegmentKind.Speech } segment } } &&
             vm.PlaySegmentCommand.CanExecute(segment))
         {
             vm.PlaySegmentCommand.Execute(segment);
@@ -63,5 +172,13 @@ public partial class MainWindow : Window
             return;
 
         BeginResizeDrag(edge, e);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm && vm.ClosePreviewCommand.CanExecute(null))
+            vm.ClosePreviewCommand.Execute(null);
+
+        base.OnClosed(e);
     }
 }

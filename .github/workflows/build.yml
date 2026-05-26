@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  APP_VERSION: 0.1.0
+
 jobs:
   build:
     name: Build ${{ matrix.os }}
@@ -43,11 +46,18 @@ jobs:
       - name: Restore
         run: dotnet restore
 
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+
       - name: Build
-        run: dotnet build --configuration Release --no-restore
+        run: dotnet build --configuration Release --no-restore -p:Version=${{ env.APP_VERSION }}
 
       - name: Publish
-        run: dotnet publish SilenceCutter.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --output artifacts/${{ matrix.artifact }}
+        run: dotnet publish SilenceCutter.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true -p:Version=${{ env.APP_VERSION }} --output artifacts/${{ matrix.artifact }}
 
       - name: Package
         shell: pwsh
