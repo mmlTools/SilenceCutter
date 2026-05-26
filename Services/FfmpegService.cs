@@ -65,6 +65,48 @@ public sealed class FfmpegService
         var keep = segments.Where(s => !(s.Kind == SegmentKind.Silence && s.Remove)).OrderBy(s => s.Start).ToList();
         if (keep.Count == 0) throw new InvalidOperationException("No segments left to export.");
 
+        if (reencode)
+        {
+            await ExportCutVideoWithFilterAsync(inputFile, keep, outputFile, ct);
+            return;
+        }
+
+        await ExportCutVideoWithSegmentConcatAsync(inputFile, keep, outputFile, ct);
+    }
+
+    private async Task ExportCutVideoWithFilterAsync(string inputFile, IReadOnlyList<TimelineSegment> keep, string outputFile, CancellationToken ct)
+    {
+        var temp = Path.Combine(Path.GetTempPath(), "silence-cutter-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var filterFile = Path.Combine(temp, "cut-filter.txt");
+            var filter = new StringBuilder();
+
+            for (var i = 0; i < keep.Count; i++)
+            {
+                var start = F(keep[i].Start);
+                var end = F(keep[i].End);
+                filter.AppendLine($"[0:v:0]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{i}];");
+                filter.AppendLine($"[0:a:0]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{i}];");
+            }
+
+            for (var i = 0; i < keep.Count; i++)
+                filter.Append($"[v{i}][a{i}]");
+
+            filter.AppendLine($"concat=n={keep.Count}:v=1:a=1[v][a]");
+            await File.WriteAllTextAsync(filterFile, filter.ToString(), ct);
+
+            var args = $"-y -i {Q(inputFile)} -filter_complex_script {Q(filterFile)} -map \"[v]\" -map \"[a]\" -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart {Q(outputFile)}";
+            var result = await ProcessRunner.RunAsync(FfmpegPath, args, ct);
+            if (result.ExitCode != 0) throw new InvalidOperationException(result.StdErr);
+        }
+        finally { try { Directory.Delete(temp, true); } catch { } }
+    }
+
+    private async Task ExportCutVideoWithSegmentConcatAsync(string inputFile, IReadOnlyList<TimelineSegment> keep, string outputFile, CancellationToken ct)
+    {
         var temp = Path.Combine(Path.GetTempPath(), "silence-cutter-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
 
@@ -75,16 +117,15 @@ public sealed class FfmpegService
             {
                 var part = Path.Combine(temp, $"part_{i:0000}.mp4");
                 parts.Add(part);
-                var seek = keep[i].Start.ToString(CultureInfo.InvariantCulture);
-                var dur = keep[i].Duration.ToString(CultureInfo.InvariantCulture);
-                var codec = reencode ? "-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k" : "-c copy";
-                await ProcessRunner.RunAsync(FfmpegPath, $"-y -ss {seek} -i {Q(inputFile)} -t {dur} {codec} {Q(part)}", ct);
+                var seek = F(keep[i].Start);
+                var dur = F(keep[i].Duration);
+                var result = await ProcessRunner.RunAsync(FfmpegPath, $"-y -ss {seek} -i {Q(inputFile)} -t {dur} -map 0 -c copy -avoid_negative_ts make_zero {Q(part)}", ct);
+                if (result.ExitCode != 0) throw new InvalidOperationException(result.StdErr);
             }
 
             var listFile = Path.Combine(temp, "concat.txt");
             await File.WriteAllLinesAsync(listFile, parts.Select(p => $"file '{p.Replace("'", "'\\''")}'"), ct);
-            var concatCodec = reencode ? "-c copy" : "-c copy";
-            var concat = await ProcessRunner.RunAsync(FfmpegPath, $"-y -f concat -safe 0 -i {Q(listFile)} {concatCodec} {Q(outputFile)}", ct);
+            var concat = await ProcessRunner.RunAsync(FfmpegPath, $"-y -f concat -safe 0 -i {Q(listFile)} -c copy {Q(outputFile)}", ct);
             if (concat.ExitCode != 0) throw new InvalidOperationException(concat.StdErr);
         }
         finally { try { Directory.Delete(temp, true); } catch { } }
@@ -98,8 +139,9 @@ public sealed class FfmpegService
         {
             var s = pauses[i];
             var outFile = Path.Combine(outputFolder, $"pause_{i + 1:000}_{TimelineSegment.TimeFmt(s.Start).Replace(':','-')}.mp4");
-            await ProcessRunner.RunAsync(FfmpegPath,
+            var result = await ProcessRunner.RunAsync(FfmpegPath,
                 $"-y -ss {s.Start.ToString(CultureInfo.InvariantCulture)} -i {Q(inputFile)} -t {s.Duration.ToString(CultureInfo.InvariantCulture)} -c copy {Q(outFile)}", ct);
+            if (result.ExitCode != 0) throw new InvalidOperationException(result.StdErr);
         }
     }
 
@@ -132,5 +174,6 @@ public sealed class FfmpegService
     }
 
     private static double Parse(string v) => double.Parse(v, CultureInfo.InvariantCulture);
+    private static string F(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
     private static string Q(string path) => "\"" + path.Replace("\"", "\\\"") + "\"";
 }
