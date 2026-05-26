@@ -1,10 +1,11 @@
-name: Build
+name: Auto Build Release
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
+
+run-name: Auto release from ${{ github.ref_name }} at ${{ github.sha }}
 
 permissions:
   contents: write
@@ -17,8 +18,20 @@ env:
   APP_VERSION: 0.1.0
 
 jobs:
+  trigger_check:
+    name: Trigger check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print trigger context
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+          echo "ref_name=${{ github.ref_name }}"
+          echo "sha=${{ github.sha }}"
+
   version:
     name: Prepare version
+    needs: trigger_check
     runs-on: ubuntu-latest
     outputs:
       app_version: ${{ steps.next_version.outputs.app_version }}
