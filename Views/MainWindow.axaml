@@ -153,6 +153,38 @@
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="VerticalContentAlignment" Value="Stretch" />
     </Style>
+    <Style Selector="NumericUpDown">
+      <Setter Property="MinHeight" Value="34" />
+      <Setter Property="Background" Value="#101722" />
+      <Setter Property="Foreground" Value="#E5ECF7" />
+      <Setter Property="BorderBrush" Value="#2E3849" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="NumericUpDown:pointerover">
+      <Setter Property="BorderBrush" Value="#44536B" />
+    </Style>
+    <Style Selector="NumericUpDown:focus-within">
+      <Setter Property="BorderBrush" Value="#6F86B5" />
+    </Style>
+    <Style Selector="ListBox">
+      <Setter Property="Background" Value="#10141C" />
+      <Setter Property="Foreground" Value="#E5ECF7" />
+      <Setter Property="BorderBrush" Value="#202838" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="ListBoxItem">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="#E5ECF7" />
+      <Setter Property="Padding" Value="6" />
+    </Style>
+    <Style Selector="ListBoxItem:pointerover">
+      <Setter Property="Background" Value="#202838" />
+    </Style>
+    <Style Selector="ListBoxItem:selected">
+      <Setter Property="Background" Value="#2A3447" />
+    </Style>
   </Window.Styles>
 
   <Grid>

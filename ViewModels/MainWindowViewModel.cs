@@ -36,6 +36,8 @@ public partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<string> Toasts { get; } = new();
     public ObservableCollection<TimelineSegmentBlock> TimelineBlocks { get; } = new();
 
+    public event Action<string>? ExportCompleted;
+
     [ObservableProperty] private MediaClip? selectedClip;
     [ObservableProperty] private double thresholdDb = -35;
     [ObservableProperty] private double minSilenceSeconds = 0.45;
@@ -266,6 +268,7 @@ public partial class MainWindowViewModel : ObservableObject
         Status = "Rendering cut video...";
         await _ffmpeg.ExportCutVideoAsync(SelectedClip.FilePath, SelectedClip.Segments, path, ReencodeExports);
         Status = "Exported cut video.";
+        NotifyExportCompleted(path);
     }
 
     [RelayCommand]
@@ -278,6 +281,7 @@ public partial class MainWindowViewModel : ObservableObject
         Status = "Exporting pause clips...";
         await _ffmpeg.ExportPausesOnlyAsync(SelectedClip.FilePath, SelectedClip.Segments, path);
         Status = "Exported pause clips.";
+        NotifyExportCompleted(path);
     }
 
     [RelayCommand]
@@ -294,6 +298,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(path)) return;
         await EdlExporter.ExportPauseMarkersAsync(path, SelectedClip, ResolveFps);
         Status = "Exported EDL pause markers.";
+        NotifyExportCompleted(path);
     }
 
     [RelayCommand]
@@ -310,6 +315,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(path)) return;
         await EdlExporter.ExportCutListCsvAsync(path, SelectedClip);
         Status = "Exported CSV cut list.";
+        NotifyExportCompleted(path);
     }
 
     private async Task AnalyzeClip(MediaClip clip)
@@ -345,6 +351,13 @@ public partial class MainWindowViewModel : ObservableObject
 
         await Task.Delay(4200);
         await Dispatcher.UIThread.InvokeAsync(() => Toasts.Remove(message));
+    }
+
+    private void NotifyExportCompleted(string path)
+    {
+        var folder = Directory.Exists(path) ? path : Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(folder))
+            ExportCompleted?.Invoke(folder);
     }
 
     private void WatchPauseSelection(MediaClip? clip)
