@@ -5,10 +5,10 @@ on:
     branches:
       - main
       - master
-    tags:
-      - "v*"
-      - "[0-9]*.[0-9]*.[0-9]*"
   pull_request:
+  release:
+    types:
+      - published
   workflow_dispatch:
 
 permissions:
@@ -52,7 +52,9 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ env.APP_VERSION }}"
-          if ("${{ github.ref }}".StartsWith("refs/tags/")) {
+          if ("${{ github.event_name }}" -eq "release") {
+            $version = "${{ github.event.release.tag_name }}" -replace '^v', ''
+          } elseif ("${{ github.ref }}".StartsWith("refs/tags/")) {
             $version = "${{ github.ref_name }}" -replace '^v', ''
           }
           "APP_VERSION=$version" >> $env:GITHUB_ENV
@@ -76,10 +78,10 @@ jobs:
           path: artifacts/${{ steps.package_metadata.outputs.release_prefix }}-${{ matrix.runtime }}.zip
 
   release:
-    name: Create GitHub release
+    name: Upload release assets
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'release'
     permissions:
       contents: write
 
@@ -90,7 +92,8 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Create release
+      - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.release.tag_name }}
           files: release-assets/*.zip
