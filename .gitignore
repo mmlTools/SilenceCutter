@@ -1,0 +1,30 @@
+# Build output
+bin/
+obj/
+artifacts/
+publish/
+
+# User and IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and diagnostics
+*.log
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local tooling
+.idea/
+*.DotSettings.user
