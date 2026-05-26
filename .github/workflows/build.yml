@@ -1,20 +1,71 @@
 name: Build
 
 on:
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: auto-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   APP_VERSION: 0.1.0
 
 jobs:
+  version:
+    name: Prepare version
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.next_version.outputs.app_version }}
+      release_tag: ${{ steps.next_version.outputs.release_tag }}
+      release_prefix: ${{ steps.next_version.outputs.release_prefix }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate next patch version
+        id: next_version
+        shell: pwsh
+        run: |
+          git fetch --tags --force
+
+          $baseVersion = [version]"${{ env.APP_VERSION }}"
+          $latestTag = git tag --list "v[0-9]*.[0-9]*.[0-9]*" |
+            ForEach-Object {
+              if ($_ -match '^v(?<version>\d+\.\d+\.\d+)$') {
+                [pscustomobject]@{
+                  Tag = $_
+                  Version = [version]$Matches.version
+                }
+              }
+            } |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+
+          if ($latestTag) {
+            $baseVersion = $latestTag.Version
+          }
+
+          $nextVersion = [version]::new($baseVersion.Major, $baseVersion.Minor, $baseVersion.Build + 1)
+          $releaseTag = "v$nextVersion"
+          $releasePrefix = "SilenceCutter-$nextVersion"
+
+          "app_version=$nextVersion" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "release_prefix=$releasePrefix" >> $env:GITHUB_OUTPUT
+
   build:
     name: Build ${{ matrix.os }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -42,53 +93,59 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-      - name: Set package metadata
-        id: package_metadata
-        shell: pwsh
-        run: |
-          $version = "${{ env.APP_VERSION }}"
-          if ("${{ github.event_name }}" -eq "release") {
-            $version = "${{ github.event.release.tag_name }}" -replace '^v', ''
-          } elseif ("${{ github.ref }}".StartsWith("refs/tags/")) {
-            $version = "${{ github.ref_name }}" -replace '^v', ''
-          }
-          "APP_VERSION=$version" >> $env:GITHUB_ENV
-          "app_version=$version" >> $env:GITHUB_OUTPUT
-          "release_prefix=SilenceCutter-$version" >> $env:GITHUB_OUTPUT
-
       - name: Build
-        run: dotnet build --configuration Release --no-restore -p:Version=${{ steps.package_metadata.outputs.app_version }}
+        run: dotnet build --configuration Release --no-restore -p:Version=${{ needs.version.outputs.app_version }}
 
       - name: Publish
-        run: dotnet publish SilenceCutter.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true -p:Version=${{ steps.package_metadata.outputs.app_version }} --output artifacts/${{ matrix.artifact }}
+        run: dotnet publish SilenceCutter.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true -p:Version=${{ needs.version.outputs.app_version }} --output artifacts/${{ matrix.artifact }}
 
       - name: Package
         shell: pwsh
-        run: Compress-Archive -Path artifacts/${{ matrix.artifact }}/* -DestinationPath artifacts/${{ steps.package_metadata.outputs.release_prefix }}-${{ matrix.runtime }}.zip
+        run: Compress-Archive -Path artifacts/${{ matrix.artifact }}/* -DestinationPath artifacts/${{ needs.version.outputs.release_prefix }}-${{ matrix.runtime }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.package_metadata.outputs.release_prefix }}-${{ matrix.runtime }}
-          path: artifacts/${{ steps.package_metadata.outputs.release_prefix }}-${{ matrix.runtime }}.zip
+          name: ${{ needs.version.outputs.release_prefix }}-${{ matrix.runtime }}
+          path: artifacts/${{ needs.version.outputs.release_prefix }}-${{ matrix.runtime }}.zip
 
   release:
-    name: Upload release assets
-    needs: build
+    name: Create tag and release
+    needs:
+      - version
+      - build
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    permissions:
-      contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
 
-      - name: Upload assets to release
+      - name: Create and push tag
+        shell: pwsh
+        run: |
+          git fetch --tags --force
+          $tag = "${{ needs.version.outputs.release_tag }}"
+          if (git rev-parse $tag 2>$null) {
+            throw "Tag $tag already exists. Push again after the next version is available."
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a $tag -m "Release $tag"
+          git push origin $tag
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ needs.version.outputs.release_tag }}
+          name: Silence Cutter ${{ needs.version.outputs.app_version }}
+          generate_release_notes: true
           files: release-assets/*.zip
