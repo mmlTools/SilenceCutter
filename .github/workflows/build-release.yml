@@ -1,0 +1,106 @@
+name: Build and Attach to Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to upload assets to, for example v0.1.0
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build ${{ matrix.runtime }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            runtime: win-x64
+            archive: zip
+
+          - os: ubuntu-latest
+            runtime: linux-x64
+            archive: tar.gz
+
+          - os: macos-latest
+            runtime: osx-x64
+            archive: tar.gz
+
+          - os: macos-latest
+            runtime: osx-arm64
+            archive: tar.gz
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Read presets
+        id: presets
+        shell: pwsh
+        run: |
+          $preset = Get-Content presets.json | ConvertFrom-Json
+          $appName = if ($preset.appName) { $preset.appName } else { "SilenceCutter" }
+          $version = $preset.version
+
+          if (-not $version) {
+            throw "presets.json is missing version."
+          }
+
+          $releaseTag = "${{ github.event.release.tag_name || inputs.tag }}"
+          if (-not $releaseTag) {
+            $releaseTag = "v$version"
+          }
+
+          "appName=$appName" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "releaseTag=$releaseTag" >> $env:GITHUB_OUTPUT
+
+      - name: Show .NET SDK
+        run: dotnet --info
+
+      - name: Restore
+        run: dotnet restore SilenceCutter.sln
+
+      - name: Build
+        run: dotnet build SilenceCutter.sln --configuration Release --no-restore /p:Version=${{ steps.presets.outputs.version }}
+
+      - name: Publish
+        run: dotnet publish SilenceCutter.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --output artifacts/${{ matrix.runtime }} /p:Version=${{ steps.presets.outputs.version }}
+
+      - name: Package Windows
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $asset = "${{ steps.presets.outputs.appName }}-${{ steps.presets.outputs.releaseTag }}-${{ matrix.runtime }}.zip"
+          Compress-Archive -Path "artifacts/${{ matrix.runtime }}/*" -DestinationPath $asset -Force
+          "ASSET_PATH=$asset" >> $env:GITHUB_ENV
+
+      - name: Package Linux/macOS
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          asset="${{ steps.presets.outputs.appName }}-${{ steps.presets.outputs.releaseTag }}-${{ matrix.runtime }}.tar.gz"
+          tar -czf "$asset" -C "artifacts/${{ matrix.runtime }}" .
+          echo "ASSET_PATH=$asset" >> "$GITHUB_ENV"
+
+      - name: Upload package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "${{ steps.presets.outputs.releaseTag }}" "$ASSET_PATH" --clobber
