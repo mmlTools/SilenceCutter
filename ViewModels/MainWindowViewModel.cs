@@ -37,6 +37,7 @@ public partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<TimelineSegmentBlock> TimelineBlocks { get; } = new();
 
     public event Action<string>? ExportCompleted;
+    public event Action? FfmpegMissing;
 
     [ObservableProperty] private MediaClip? selectedClip;
     [ObservableProperty] private double thresholdDb = -35;
@@ -60,6 +61,19 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     public IStorageProvider? StorageProvider { get; set; }
+
+    public async Task CheckFfmpegAvailableAsync()
+    {
+        try
+        {
+            await _ffmpeg.CheckToolsAvailableAsync();
+        }
+        catch (Exception ex) when (FfmpegService.IsMissingToolException(ex))
+        {
+            Status = "FFmpeg was not found. Install FFmpeg and make sure it is available in PATH.";
+            FfmpegMissing?.Invoke();
+        }
+    }
 
     public void AddClipPaths(IEnumerable<string> paths)
     {
@@ -228,6 +242,10 @@ public partial class MainWindowViewModel : ObservableObject
         catch (Exception ex)
         {
             ClosePreview();
+
+            if (HandleMissingFfmpeg(ex))
+                return;
+
             Status = $"Could not play segment: {ex.Message}";
         }
     }
@@ -266,9 +284,17 @@ public partial class MainWindowViewModel : ObservableObject
         var path = file?.TryGetLocalPath();
         if (string.IsNullOrWhiteSpace(path)) return;
         Status = "Rendering cut video...";
-        await _ffmpeg.ExportCutVideoAsync(SelectedClip.FilePath, SelectedClip.Segments, path, ReencodeExports);
-        Status = "Exported cut video.";
-        NotifyExportCompleted(path);
+        try
+        {
+            await _ffmpeg.ExportCutVideoAsync(SelectedClip.FilePath, SelectedClip.Segments, path, ReencodeExports);
+            Status = "Exported cut video.";
+            NotifyExportCompleted(path);
+        }
+        catch (Exception ex)
+        {
+            if (!HandleMissingFfmpeg(ex))
+                Status = $"Could not export cut video: {ex.Message}";
+        }
     }
 
     [RelayCommand]
@@ -279,9 +305,17 @@ public partial class MainWindowViewModel : ObservableObject
         var path = folder.FirstOrDefault()?.TryGetLocalPath();
         if (string.IsNullOrWhiteSpace(path)) return;
         Status = "Exporting pause clips...";
-        await _ffmpeg.ExportPausesOnlyAsync(SelectedClip.FilePath, SelectedClip.Segments, path);
-        Status = "Exported pause clips.";
-        NotifyExportCompleted(path);
+        try
+        {
+            await _ffmpeg.ExportPausesOnlyAsync(SelectedClip.FilePath, SelectedClip.Segments, path);
+            Status = "Exported pause clips.";
+            NotifyExportCompleted(path);
+        }
+        catch (Exception ex)
+        {
+            if (!HandleMissingFfmpeg(ex))
+                Status = $"Could not export pause clips: {ex.Message}";
+        }
     }
 
     [RelayCommand]
@@ -338,6 +372,12 @@ public partial class MainWindowViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            if (HandleMissingFfmpeg(ex))
+            {
+                clip.Status = "FFmpeg missing";
+                return;
+            }
+
             clip.Status = "Error";
             Status = ex.Message;
         }
@@ -358,6 +398,16 @@ public partial class MainWindowViewModel : ObservableObject
         var folder = Directory.Exists(path) ? path : Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(folder))
             ExportCompleted?.Invoke(folder);
+    }
+
+    private bool HandleMissingFfmpeg(Exception ex)
+    {
+        if (!FfmpegService.IsMissingToolException(ex))
+            return false;
+
+        Status = "FFmpeg was not found. Install FFmpeg and make sure it is available in PATH.";
+        FfmpegMissing?.Invoke();
+        return true;
     }
 
     private void WatchPauseSelection(MediaClip? clip)

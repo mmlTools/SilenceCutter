@@ -12,18 +12,23 @@ namespace SilenceCutter.Views;
 
 public partial class MainWindow : Window
 {
+    private bool _isFfmpegDialogOpen;
+
     public MainWindow()
     {
         InitializeComponent();
-        Opened += (_, _) =>
+        Opened += async (_, _) =>
         {
             if (DataContext is MainWindowViewModel vm)
             {
                 vm.StorageProvider = StorageProvider;
                 vm.ExportCompleted -= ViewModel_ExportCompleted;
                 vm.ExportCompleted += ViewModel_ExportCompleted;
+                vm.FfmpegMissing -= ViewModel_FfmpegMissing;
+                vm.FfmpegMissing += ViewModel_FfmpegMissing;
                 if (vm.CheckForUpdatesCommand.CanExecute(null))
                     vm.CheckForUpdatesCommand.Execute(null);
+                await vm.CheckFfmpegAvailableAsync();
             }
         };
     }
@@ -67,6 +72,11 @@ public partial class MainWindow : Window
     private async void ViewModel_ExportCompleted(string folder)
     {
         await ShowExportCompleteDialogAsync(folder);
+    }
+
+    private async void ViewModel_FfmpegMissing()
+    {
+        await ShowFfmpegMissingDialogAsync();
     }
 
     private void AddClipsButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -189,6 +199,7 @@ public partial class MainWindow : Window
         if (DataContext is MainWindowViewModel vm)
         {
             vm.ExportCompleted -= ViewModel_ExportCompleted;
+            vm.FfmpegMissing -= ViewModel_FfmpegMissing;
             if (vm.ClosePreviewCommand.CanExecute(null))
                 vm.ClosePreviewCommand.Execute(null);
         }
@@ -211,6 +222,136 @@ public partial class MainWindow : Window
         };
 
         await dialog.ShowDialog(this);
+    }
+
+    private async Task ShowFfmpegMissingDialogAsync()
+    {
+        if (_isFfmpegDialogOpen)
+            return;
+
+        _isFfmpegDialogOpen = true;
+        try
+        {
+            var dialog = new Window
+            {
+                Title = "FFmpeg Required",
+                Width = 460,
+                Height = 260,
+                CanResize = false,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Background = new SolidColorBrush(Colors.Transparent),
+                SystemDecorations = SystemDecorations.None,
+                Content = BuildFfmpegMissingDialogContent()
+            };
+
+            await dialog.ShowDialog(this);
+        }
+        finally
+        {
+            _isFfmpegDialogOpen = false;
+        }
+    }
+
+    private Control BuildFfmpegMissingDialogContent()
+    {
+        var title = new TextBlock
+        {
+            Text = "FFmpeg is missing",
+            FontSize = 20,
+            FontWeight = FontWeight.SemiBold,
+            Foreground = new SolidColorBrush(Color.Parse("#E5ECF7"))
+        };
+
+        var closeButton = new Button
+        {
+            Content = "x",
+            Width = 32,
+            Height = 28,
+            MinWidth = 32,
+            MinHeight = 28,
+            Padding = new Thickness(0),
+            Background = new SolidColorBrush(Colors.Transparent),
+            Foreground = new SolidColorBrush(Color.Parse("#CBD5E1")),
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(4),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        closeButton.Click += (_, _) => ((Window)closeButton.GetVisualRoot()!).Close();
+
+        var header = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(14, 10),
+            Children = { title, closeButton }
+        };
+        Grid.SetColumn(closeButton, 1);
+
+        var headerBand = new Border
+        {
+            Background = new SolidColorBrush(Color.Parse("#101722")),
+            CornerRadius = new CornerRadius(10, 10, 0, 0),
+            Child = header
+        };
+        headerBand.PointerPressed += (_, e) =>
+        {
+            if (e.Source is Visual visual && visual.GetVisualAncestors().OfType<Button>().Any())
+                return;
+
+            if (e.GetCurrentPoint(headerBand).Properties.IsLeftButtonPressed &&
+                headerBand.GetVisualRoot() is Window window)
+            {
+                window.BeginMoveDrag(e);
+            }
+        };
+
+        var message = new TextBlock
+        {
+            Text = "Silence Cutter needs FFmpeg, FFprobe, and FFplay to analyze, preview, and export clips. Install FFmpeg and make sure it is available in PATH, then restart the app.",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new SolidColorBrush(Color.Parse("#B8C2D6"))
+        };
+
+        var downloadButton = new Button
+        {
+            Content = "Download FFmpeg",
+            Width = 180,
+            MinHeight = 36,
+            Padding = new Thickness(14, 7),
+            Background = new SolidColorBrush(Color.Parse("#2A3447")),
+            Foreground = new SolidColorBrush(Color.Parse("#E5ECF7")),
+            BorderBrush = new SolidColorBrush(Color.Parse("#4B5C76")),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        downloadButton.Click += async (_, _) =>
+        {
+            var launcher = TopLevel.GetTopLevel(this)?.Launcher;
+            if (launcher is not null)
+                await launcher.LaunchUriAsync(new Uri("https://ffmpeg.org/download.html"));
+        };
+
+        var body = new StackPanel
+        {
+            Spacing = 16,
+            Margin = new Thickness(18),
+            Children = { message, downloadButton }
+        };
+
+        return new Border
+        {
+            Background = new SolidColorBrush(Color.Parse("#151922")),
+            CornerRadius = new CornerRadius(10),
+            ClipToBounds = true,
+            Child = new StackPanel
+            {
+                Children = { headerBand, body }
+            },
+        };
     }
 
     private Control BuildExportDialogContent(string folder)

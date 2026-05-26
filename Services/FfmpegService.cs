@@ -1,4 +1,5 @@
 using SilenceCutter.Models;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -14,6 +15,19 @@ public sealed class FfmpegService
 
     public string FfmpegPath { get; set; } = "ffmpeg";
     public string FfprobePath { get; set; } = "ffprobe";
+    public string FfplayPath { get; set; } = "ffplay";
+
+    public async Task CheckToolsAvailableAsync(CancellationToken ct = default)
+    {
+        await ProcessRunner.RunAsync(FfmpegPath, "-version", ct);
+        await ProcessRunner.RunAsync(FfprobePath, "-version", ct);
+        await ProcessRunner.RunAsync(FfplayPath, "-version", ct);
+    }
+
+    public static bool IsMissingToolException(Exception ex) =>
+        ex is Win32Exception { NativeErrorCode: 2 or 3 } ||
+        ex is FileNotFoundException ||
+        ex.InnerException is not null && IsMissingToolException(ex.InnerException);
 
     public async Task<double> GetDurationAsync(string file, CancellationToken ct = default)
     {
@@ -168,7 +182,7 @@ public sealed class FfmpegService
         var args = $"-nodisp -autoexit -loglevel quiet -ss {F(segment.Start)} -t {F(segment.Duration)} -i {Q(inputFile)}";
         var process = Process.Start(new ProcessStartInfo
         {
-            FileName = "ffplay",
+            FileName = FfplayPath,
             Arguments = args,
             UseShellExecute = false,
             CreateNoWindow = true
